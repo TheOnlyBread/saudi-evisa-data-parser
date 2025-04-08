@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, send_file
 import os
+import re
 import pdfplumber
 import arabic_reshaper
 import xlsxwriter
@@ -10,200 +11,109 @@ app = Flask(__name__)
 uploaded_file_paths = []
 
 app.config['UPLOAD_FOLDER'] = 'process'  # Set the upload folder
-print('***************************')
-print(os.listdir())
-
 
 @app.route('/')
 def index():
-  return render_template('upload.html')
-
+    return render_template('upload.html')
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
-  global uploaded_file_paths
-  uploaded_file_paths = []
-  uploaded_files = request.files.getlist('files[]')
-  for uploaded_file in uploaded_files:
-    if uploaded_file.filename != '':
-      uploaded_file.save(
-          os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename))
-      uploaded_file_paths.append(
-          os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename))
-  process_files()
-  return send_file(os.path.join(app.config['UPLOAD_FOLDER'], 'sheet.xlsx'),
-                   as_attachment=True), delete()
+    global uploaded_file_paths
+    uploaded_file_paths = []
+    uploaded_files = request.files.getlist('files[]')
+    for uploaded_file in uploaded_files:
+        if uploaded_file.filename != '':
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], uploaded_file.filename)
+            uploaded_file.save(file_path)
+            uploaded_file_paths.append(file_path)
+    process_files()
+    return send_file(os.path.join(app.config['UPLOAD_FOLDER'], 'sheet.xlsx'), as_attachment=True), delete()
 
+def extract_visa_info_from_text(text, file_name):
+    # Extract the name directly from the file name
+    name = os.path.splitext(os.path.basename(file_name))[0]
 
-@app.route('/process')
+    country_match = re.search(r'Nationality\s+([A-Za-z ]+)', text)
+    country = country_match.group(1).strip() if country_match else None
+
+    # Adjusting the regex for Passport Number to allow alphanumeric values
+    passport_match = re.search(r'(?:Passport No.|PassportNo.|رقم الجواز)\s*([A-Z0-9]+)', text)
+    passport_number = passport_match.group(1).strip() if passport_match else None
+
+    valid_from_match = re.search(r'Valid From\s+(\d{2}/\d{2}/\d{4})', text)
+    valid_from = valid_from_match.group(1).strip() if valid_from_match else None
+
+    valid_until_match = re.search(r'Valid Until\s+(\d{2}/\d{2}/\d{4})', text)
+    valid_until = valid_until_match.group(1).strip() if valid_until_match else None
+
+    # Improved extraction for 'Duration of Stay'
+    duration_of_stay = None
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "Duration of Stay" in line:
+            # Try to find a numeric value in the same line or the next one
+            duration_line = line + (lines[i+1] if i+1 < len(lines) else "")
+            duration_match = re.search(r'(\d+|[٠-٩]+)', duration_line)
+            if duration_match:
+                duration_of_stay = duration_match.group(1).strip()
+                # Convert Arabic numerals to English if necessary
+                arabic_to_english = {'٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+                                     '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9'}
+                duration_of_stay = ''.join(arabic_to_english.get(c, c) for c in duration_of_stay)
+            break
+
+    entry_type_match = re.search(r'Entry Type\s+(Single|Multiple)', text)
+    entry_type = entry_type_match.group(1).strip() if entry_type_match else None
+
+    visa_no_match = re.search(r'Visa No.\s+(\d+)', text)
+    visa_no = visa_no_match.group(1).strip() if visa_no_match else None
+
+    return {
+        "Name": name,  # Extracted from file name
+        "Country": country,
+        "Passport Number": passport_number,
+        "Visa No": visa_no,
+        "Valid From": valid_from,
+        "Valid Until": valid_until,
+        "Duration of Stay": duration_of_stay,
+        "Entry Type": entry_type
+    }
+
 def process_files():
-  # Add your processing logic here
-  char_to_replace = {
-      'PM':
-      '',
-      'Visa No. ':
-      '',
-      'Valid from ':
-      '',
-      'ﺭﻗﻢ ﺍﻟﺘﺄﺷﻴﺮﺓ  ':
-      '',
-      'ﺻﺎﻟﺤﺔ ﺍﻋﺘﺒﺎﺭﺍ ﻣﻦ':
-      '',
-      'Valid until ':
-      '',
-      'ﺻﺎﻟﺤﺔ ﻟﻐﺎﻳﺔ':
-      '',
-      'ﻣﺪﺓ ﺍﻹﻗﺎﻣﺔ ﻳﻮﻡ Duration of Stay Days ':
-      '',
-      'Passport No. ':
-      '',
-      'ﺭﻗﻢ ﺟﻮﺍﺯ ﺍﻟﺴﻔﺮ ':
-      '',
-      'ﻣﺼﺪﺭ ﺍﻟﺘﺄﺷﻴﺮﺓ ﺍﻟﺴﻔﺎﺭﺓ ﺍﻟﺴﻌﻮﺩﻳﺔ ﺍﻟﺮﻗﻤﻴﺔ - Place of issue Saudi Digital Embassy':
-      '',
-      'Name':
-      '',
-      'ﺍﻻﺳﻢ':
-      '',
-      'ﺍﻟﺠﻨﺴﻴﺔ':
-      '',
-      'ﻧﻮﻉ ﺍﻟﺘﺄﺷﻴﺮﺓ ﺯﻳﺎﺭﺓ ﺣﻜﻮﻣﻴﺔ - Type Of Visa Gov. Visit':
-      '',
-      ' Nationality ':
-      '',
-      ' Entry Type ':
-      '',
-      'ﻋﺪﺩ ﻣﺮﺎﺗ ﺍﻟﺪﺧﻮﻝ ':
-      '',
-      'ﺍﻟﻐﺮﺽ ﻣﻮﺳﻢ ﺍﻟﺮﻳﺎﺽ - Purpose Riyadh Season':
-      '',
-      '.Visa No':
-      '',
-      'ﺭﻗﻢ ﺍﻟﺴﺠﻞ':
-      '',
-      'https://visa.mofa.gov.sa/Home/PrintEventVisa Page 1 of 2':
-      '',
-      '.Application No':
-      '',
-      'ﺭﻗﻢ ﺍﻟﻄﻠﺐ  ':
-      '',
-      'Nationality ':
-      '',
-      'Duration of Stay Days':
-      '',
-      'ﻣﺪﺓ ﺍﻹﻗﺎﻣﺔ ٩٠ ﻳﻮﻡ':
-      '',
-      'ﻣﺪﺓ ﺍﻹﻗﺎﻣﺔ':
-      '',
-      'Days':
-      '',
-      'Entry Type ':
-      '',
-      '-':
-      '',
-      'PassportNo.':
-      '',
-      'VisaNo.':
-      '',
-      'Validfrom':
-      '',
-      'Validuntil':
-      '',
-      'Duration of Stay':
-      '',
-      '٣٠':
-      '',
-      'ﻳﻮﻡ':
-      '',
-      'ﺭﻗﻢﺍﻟﺘﺄﺷﻴﺮﺓ':
-      '',
-      'ﺭﻗﻢ ﺍﻟﺠﻮﺍﺯ':
-      '',
-      'ﺭﻗﻢ ﺍﻟﺘﺄﺷﻴﺮﺓ ': '',
-      'ﺻﺎﻟﺤﺔ ﺍﻋﺘﺒﺎﺭ ﺍ ﻣﻦ Valid From ': '',
-      ' Valid Until ': ''
-  }
-  count = len(uploaded_file_paths)
+    workbook = xlsxwriter.Workbook(os.path.join(app.config['UPLOAD_FOLDER'], 'sheet.xlsx'))
+    worksheet = workbook.add_worksheet()
 
-  workbook = xlsxwriter.Workbook(
-      os.path.join(app.config['UPLOAD_FOLDER']) + '/sheet.xlsx')
-  worksheet = workbook.add_worksheet()
-  n = 1
-  while n <= count:
-    for filename in uploaded_file_paths:
-      x1 = 1
-      x3 = 2
-      x5 = 3
-      x7 = 4
-      x8 = 5
-      x12 = 8
-      x14 = 11
-      file = filename
-      pdf = pdfplumber.open(file)
-      page = pdf.pages[0]
-      text = page.extract_text()
-      reshaped_text = arabic_reshaper.reshape(text)
-      bidi_text = get_display(reshaped_text)
-      for key, value in char_to_replace.items():
-        bidi_text = bidi_text.replace(key, value)
+    headers = ["Name", "Country", "Passport Number", "Visa No", "Valid From", "Valid Until", "Duration of Stay", "Entry Type"]
+    for col_num, header in enumerate(headers, start=1):
+        worksheet.write(0, col_num - 1, header)
 
-      Visano = bidi_text.splitlines()[1]
-      print("Visa no:", Visano)
-      if '6' not in Visano:
-        x1 = x1 - 1
-        x3 = x3 - 1
-        x5 = x5 - 1
-        x7 = x7 - 1
-        x8 = x8 - 1
-        x12 = x12 - 2
-        x14 = x14 - 2
-      else:
-        print('all good')
+    for row_num, file_path in enumerate(uploaded_file_paths, start=1):
+        with pdfplumber.open(file_path) as pdf:
+            first_page = pdf.pages[0]
+            extracted_text = first_page.extract_text()
 
-      print(bidi_text)
-      Visano = bidi_text.splitlines()[x1]
-      print("Visa no:", Visano)
-      start = bidi_text.splitlines()[x3]
-      end = bidi_text.splitlines()[x5]
-      passport = bidi_text.splitlines()[x8]
-      duration = bidi_text.splitlines()[x7]
-      country = bidi_text.splitlines()[x12]
-      if country == "":
-        country = bidi_text.splitlines()[x12 - 1]
-      vtype = bidi_text.splitlines()[x14]
-      if vtype == "":
-        vtype = bidi_text.splitlines()[x14 - 1]
-      country = country.encode('ascii', 'ignore').decode()
-      vtype = vtype.encode('ascii', 'ignore').decode()
-      #vtype = vtype.encode('ascii', 'ignore', **('errors',)).decode()
-      name = filename.split('/')[len(filename.split('/')) - 1]
-      name = name.replace('.pdf', '')
-      vtype = vtype.replace(' ', '')
-      Visano = Visano.replace(' ', '')
-      country = country.lstrip()
-      duration = duration.replace(' ', '')
-      worksheet.write('A' + str(n), name)
-      worksheet.write('B' + str(n), country)
-      worksheet.write('C' + str(n), passport)
-      worksheet.write('D' + str(n), Visano)
-      worksheet.write('E' + str(n), start)
-      worksheet.write('F' + str(n), end)
-      worksheet.write('G' + str(n), duration)
-      worksheet.write('H' + str(n), vtype)
-      n = n + 1
+        reshaped_text = arabic_reshaper.reshape(extracted_text)
+        bidi_text = get_display(reshaped_text)
 
-  workbook.close()
+        visa_info = extract_visa_info_from_text(bidi_text, file_path)
 
+        worksheet.write(row_num, 0, visa_info["Name"])
+        worksheet.write(row_num, 1, visa_info["Country"])
+        worksheet.write(row_num, 2, visa_info["Passport Number"])
+        worksheet.write(row_num, 3, visa_info["Visa No"])
+        worksheet.write(row_num, 4, visa_info["Valid From"])
+        worksheet.write(row_num, 5, visa_info["Valid Until"])
+        worksheet.write(row_num, 6, visa_info["Duration of Stay"])
+        worksheet.write(row_num, 7, visa_info["Entry Type"])
 
-  # Delete uploaded files
+    workbook.close()
+
 def delete():
-  for filename in os.listdir(app.config['UPLOAD_FOLDER']):
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if os.path.isfile(file_path):
-      os.remove(file_path)
-
+    for filename in os.listdir(app.config['UPLOAD_FOLDER']):
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if os.path.isfile(file_path):
+            os.remove(file_path)
 
 if __name__ == '__main__':
-  os.makedirs(app.config['UPLOAD_FOLDER'],
-              exist_ok=True)  # Create 'process' folder if it doesn't exist
-  app.run(debug=True, host='0.0.0.0', port=8080)
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)  # Create 'process' folder if it doesn't exist
+    app.run(debug=True, host='0.0.0.0', port=8080)
