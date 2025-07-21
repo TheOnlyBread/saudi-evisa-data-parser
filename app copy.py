@@ -1,4 +1,5 @@
 from flask import Flask, render_template_string, request, send_file
+from pyngrok import ngrok
 import os
 import re
 import pdfplumber
@@ -73,6 +74,7 @@ def upload_file():
     workbook.close()
     return send_file(out_path, as_attachment=True)
 
-# Run app (Render will expose the public URL)
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# Start server via ngrok
+url = ngrok.connect(5000)
+print(f"Public URL: {url}")
+app.run(port=5000)
